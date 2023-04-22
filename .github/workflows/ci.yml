@@ -1,0 +1,231 @@
+name: Continuous Integration (CI)
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      HOST_NAME: ${{ steps.get_outputs.outputs.HOST_NAME }}
+      GATEWAY_PORT: ${{ steps.get_outputs.outputs.GATEWAY_PORT }}
+    steps:
+      - name: Init outputs
+        id: get_outputs
+        run: |
+          echo "HOST_NAME=gateway" >> "$GITHUB_OUTPUT"
+          echo "GATEWAY_PORT=8080" >> "$GITHUB_OUTPUT"
+
+      - name: Create .env file
+        run: |
+          echo "BASE_DB_URL=mongodb://mongo/mre" > ${{ github.workspace }}/.env
+          echo "CIPHER_KEY=${{ secrets.CIPHER_KEY }}" >> ${{ github.workspace }}/.env
+          echo "CIPHER_IV_KEY=${{ secrets.CIPHER_IV_KEY }}" >> ${{ github.workspace }}/.env
+          echo "GATEWAY_PORT=${{steps.get_outputs.outputs.GATEWAY_PORT}}" >> ${{ github.workspace }}/.env
+          echo "CORS_ENABLED=false" >> ${{ github.workspace }}/.env
+          echo "GATEWAY_URL=http://${{steps.get_outputs.outputs.HOST_NAME}}:${{steps.get_outputs.outputs.GATEWAY_PORT}}/api/v2" >> ${{ github.workspace }}/.env
+          echo "AUTHENTICATOR_TOKEN_DB_PASSWORD=${{ secrets.AUTHENTICATOR_TOKEN_DB_PASSWORD }}" >> ${{ github.workspace }}/.env
+          echo "AUTHENTICATOR_ACCESS_TOKEN_SECRET=${{ secrets.AUTHENTICATOR_ACCESS_TOKEN_SECRET }}" >> ${{ github.workspace }}/.env
+          echo "AUTHENTICATOR_REFRESH_TOKEN_SECRET=${{ secrets.AUTHENTICATOR_REFRESH_TOKEN_SECRET }}" >> ${{ github.workspace }}/.env
+          echo "AUTHENTICATOR_RESET_TOKEN_SECRET=${{ secrets.AUTHENTICATOR_RESET_TOKEN_SECRET }}" >> ${{ github.workspace }}/.env
+          echo "ALLOW_SENDING_EMAILS=false" >> ${{ github.workspace }}/.env
+          echo "MAILGUN_API_KEY=" >> ${{ github.workspace }}/.env
+          echo "MAILGUN_DOMAIN=" >> ${{ github.workspace }}/.env
+          echo "EMAIL_FROM=" >> ${{ github.workspace }}/.env
+          echo "EMAIL_REPLY_TO=" >> ${{ github.workspace }}/.env
+          echo "EMAIL_BCC=" >> ${{ github.workspace }}/.env
+          echo "DEMO_MODE=false" >> ${{ github.workspace }}/.env
+          echo "RESTORE_DB=false" >> ${{ github.workspace }}/.env
+          echo "DOMAIN_URL=http://${{steps.get_outputs.outputs.HOST_NAME}}" >> ${{ github.workspace }}/.env
+          echo "LANDLORD_BASE_PATH=/landlord" >> ${{ github.workspace }}/.env
+          echo "LANDLORD_APP_URL=http://${{steps.get_outputs.outputs.HOST_NAME}}:${{steps.get_outputs.outputs.GATEWAY_PORT}}/landlord" >> ${{ github.workspace }}/.env
+          echo "TENANT_BASE_PATH=/tenant" >> ${{ github.workspace }}/.env
+          echo "TENANT_APP_URL=http://${{steps.get_outputs.outputs.HOST_NAME}}:${{steps.get_outputs.outputs.GATEWAY_PORT}}/tenant" >> ${{ github.workspace }}/.env
+
+      - name: Store .env file in cache
+        uses: actions/cache/save@v3
+        with:
+          path: ${{ github.workspace }}/.env
+          key: ${{ github.sha }}-env
+
+  build_emailer:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build and produce Docker image
+        uses: ./.github/actions/buildservice
+        with:
+          service: emailer
+
+  build_api:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build and produce Docker image
+        uses: ./.github/actions/buildservice
+        with:
+          service: api
+
+  build_authenticator:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build and produce Docker image
+        uses: ./.github/actions/buildservice
+        with:
+          service: authenticator
+
+  build_gateway:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build and produce Docker image
+        uses: ./.github/actions/buildservice
+        with:
+          service: gateway
+
+  build_tenant_frontend:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build and produce Docker image
+        uses: ./.github/actions/buildservice
+        with:
+          service: tenant-frontend
+
+  build_landlord_frontend:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build and produce Docker image
+        uses: ./.github/actions/buildservice
+        with:
+          service: landlord-frontend
+
+  build_pdfgenerator:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build and produce Docker image
+        uses: ./.github/actions/buildservice
+        with:
+          service: pdfgenerator
+
+  test:
+    runs-on: ubuntu-latest
+    needs:
+      [
+        prepare,
+        build_api,
+        build_emailer,
+        build_pdfgenerator,
+        build_authenticator,
+        build_gateway,
+        build_landlord_frontend,
+        build_tenant_frontend,
+      ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Docker and MRE
+        run: |
+          sudo apt-get update && sudo apt-get install -y docker-compose
+          cd ${{ github.workspace }}
+          chmod +x mre
+
+      - name: Restore .env file from cache
+        uses: actions/cache/restore@v3
+        with:
+          path: ${{ github.workspace }}/.env
+          key: ${{ github.sha }}-env
+
+      - name: Restore gateway image from cache
+        uses: actions/cache/restore@v3
+        with:
+          path: ${{ github.workspace }}/gateway.tar
+          key: ${{ github.sha }}-gateway
+      - name: Restore emailer image from cache
+        uses: actions/cache/restore@v3
+        with:
+          path: ${{ github.workspace }}/emailer.tar
+          key: ${{ github.sha }}-emailer
+      - name: Restore pdfgenerator image from cache
+        uses: actions/cache/restore@v3
+        with:
+          path: ${{ github.workspace }}/pdfgenerator.tar
+          key: ${{ github.sha }}-pdfgenerator
+      - name: Restore authenticator image from cache
+        uses: actions/cache/restore@v3
+        with:
+          path: ${{ github.workspace }}/authenticator.tar
+          key: ${{ github.sha }}-authenticator
+      - name: Restore api image from cache
+        uses: actions/cache/restore@v3
+        with:
+          path: ${{ github.workspace }}/api.tar
+          key: ${{ github.sha }}-api
+      - name: Restore landlord-frontend image from cache
+        uses: actions/cache/restore@v3
+        with:
+          path: ${{ github.workspace }}/landlord-frontend.tar
+          key: ${{ github.sha }}-landlord-frontend
+      - name: Restore tenant-frontend image from cache
+        uses: actions/cache/restore@v3
+        with:
+          path: ${{ github.workspace }}/tenant-frontend.tar
+          key: ${{ github.sha }}-tenant-frontend
+
+      - name: Load Docker images from cache
+        run: |
+          cd ${{ github.workspace }}
+          docker load -i landlord-frontend.tar
+          docker load -i tenant-frontend.tar
+          docker load -i pdfgenerator.tar
+          docker load -i api.tar
+          docker load -i emailer.tar
+          docker load -i authenticator.tar
+          docker load -i gateway.tar
+
+      - name: Start Application (webapps, services, databases)
+        run: |
+          cd ${{ github.workspace }}
+          ./mre start --ci
+          ./mre status
+
+      - name: Check if app is up and running
+        run: curl -sS http://${{needs.prepare.outputs.HOST_NAME}}:${{needs.prepare.outputs.GATEWAY_PORT}}/landlord/signin
+
+      - name: Run tests
+        run: |
+          yarn
+          yarn run e2e:ci
+
+      - name: Stop application
+        run: |
+          cd ${{ github.workspace }}
+          ./mre stop --ci
